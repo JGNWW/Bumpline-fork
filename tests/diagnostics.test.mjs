@@ -146,15 +146,16 @@ describe('technical data', () => {
     assert.match(build, /data_collection_permissions: \{ required: \['none'\], optional: \['technicalAndInteraction'\] \}/);
   });
 
-  it('is asked before the panel and the background build their links', () => {
-    for (const name of ['popup.js', 'background.js']) {
-      const script = readFileSync(new URL(`../${name}`, import.meta.url), 'utf8');
-      assert.match(script, /BumplineLog\.technicalDataAllowed\(ext, BumplineStore\.isFirefox\(\)\)/, name);
-    }
+  it('is asked before the panel builds its report link', () => {
     const popup = readFileSync(new URL('../popup.js', import.meta.url), 'utf8');
+    assert.match(popup, /BumplineLog\.technicalDataAllowed\(ext, BumplineStore\.isFirefox\(\)\)/);
     assert.match(popup, /allowed: report\.allowed/);
+  });
+
+  it('opens no goodbye page: this fork clears the uninstall address', () => {
     const background = readFileSync(new URL('../background.js', import.meta.url), 'utf8');
-    assert.match(background, /goodbyeUrl\(.*, allowed\);/);
+    assert.match(background, /setUninstallURL\(''\)/);
+    assert.doesNotMatch(background, /goodbyeUrl|tabs\.create|checkBroadcast/);
   });
 });
 

@@ -1182,13 +1182,6 @@ async function main() {
     if (DISMISSED_KEY in changes) stored.dismissed = listOf(changes[DISMISSED_KEY].newValue);
     renderNews(stored);
   });
-
-  // Opening the panel is a moment the seller is paying attention, so it is
-  // also a moment to look; the background decides whether the last look is
-  // recent enough to skip.
-  Promise.resolve()
-    .then(() => ext.runtime.sendMessage({ type: 'bumpline:broadcastCheck' }))
-    .catch(() => {});
 }
 
 main();

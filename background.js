@@ -129,7 +129,22 @@ function base64Of(buffer) {
   return btoa(binary);
 }
 
+// Only Vinted (its country sites and its image CDN on vinted.net) and the
+// extension's own package. Photo URLs arrive from API replies that pass through
+// the page's main world, so they are checked here rather than trusted.
+function mayFetch(url) {
+  if (typeof url !== 'string') return false;
+  if (url.startsWith(ext.runtime.getURL(''))) return true;
+  try {
+    const { protocol, hostname } = new URL(url);
+    return protocol === 'https:' && (VINTED_HOST.test(hostname) || /(^|\.)vinted\.net$/i.test(hostname));
+  } catch (_) {
+    return false;
+  }
+}
+
 async function fetchBinary(url) {
+  if (!mayFetch(url)) return { ok: false, error: 'refused: not a Vinted address' };
   try {
     const reply = await fetch(url, { credentials: 'omit' });
     if (!reply.ok) return { ok: false, status: reply.status };
@@ -153,13 +168,6 @@ ext.runtime.onMessage.addListener((message, _sender, respond) => {
 
   if (message.type === 'bumpline:fetchBinary' && message.url) {
     fetchBinary(message.url).then(respond);
-    return true;
-  }
-
-  // The panel asks when it opens. The answer only says the check is over; the
-  // notices themselves reach the panel through storage, like everything else.
-  if (message.type === 'bumpline:broadcastCheck') {
-    checkBroadcast().then(() => respond(true));
     return true;
   }
 
@@ -260,23 +268,14 @@ async function paintActiveTab() {
 
 // --- the website's notices ------------------------------------------------
 
-// Asked on the way up and on every tab event, which comes to often while the
-// browser is in use and never while it is not; refresh() itself makes sure the
-// website hears from this browser at most once an hour. An alarm would be
-// tidier and would cost a new permission, and an update that asks for one is an
-// update some sellers never accept. What comes back reaches the badge and the
-// panel through storage.
-function checkBroadcast() {
-  return BumplineBroadcast.refresh({
-    fetch: url => fetch(url, { cache: 'no-cache', credentials: 'omit' }),
-    get: keys => ext.storage.local.get(keys),
-    set: values => ext.storage.local.set(values),
-    now: Date.now,
-  }).catch(err => {
-    note('could not check the notices', err);
-    return false;
-  });
-}
+// This fork runs fully locally: the notices file on the developer's website is
+// never fetched. Whatever an earlier version stored is cleared, so no old
+// notice or badge lingers.
+Promise.resolve(ext.storage.local.remove([
+  BumplineBroadcast.NOTICES_KEY,
+  BumplineBroadcast.DISMISSED_KEY,
+  BumplineBroadcast.CHECKED_KEY,
+])).catch(() => {});
 
 // The seller does not have to open the panel to learn that relisting is
 // broken: a notice that asks for attention puts a "!" on the icon until it is
@@ -336,7 +335,6 @@ async function paintIconFromStore() {
   // The badge depends on the switch and the language just read, so it comes
   // after them; a fresh file, if there is one, repaints it through storage.
   paintBadge();
-  checkBroadcast();
 }
 
 paintIconFromStore();
@@ -375,7 +373,6 @@ ext.tabs.onActivated.addListener(({ tabId }) => {
     .then(tab => paintTab(tabId, tab && tab.url))
     .catch(() => paintTab(tabId, null));
   paintBadge();
-  checkBroadcast();
 });
 
 ext.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -384,60 +381,14 @@ ext.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!changeInfo.url && changeInfo.status !== 'complete') return;
   paintTab(tabId, tab && tab.url);
   paintBadge();
-  checkBroadcast();
 });
 
-// The first page a seller sees and the last one both live on the website. The
-// first shows the pinning steps for the browser it opens in and can be
-// corrected without a store review; the last opens after the extension is
-// gone, so it could not live anywhere else. Both are plain visits to a static
-// site, in the language the browser asks for, with nothing of the seller's
-// attached to them.
-const SITE = 'https://bumpline.giampy.tech';
-
-// Installed from the store the extension draws nothing anywhere until you are
-// on your own Vinted wardrobe, so a new user sees an empty toolbar and assumes
-// it is broken. Opening the welcome page once answers where the icon went and
-// where the buttons appear. An update is not a first impression, so it passes.
-ext.runtime.onInstalled.addListener(details => {
-  if (details.reason !== 'install') return;
-  ext.tabs.create({ url: SITE + '/welcome/' });
-});
-
-// The browser opens this address once the extension has been removed: the one
-// moment a seller who gave up on it can still say why. The page sends nothing
-// by itself; what the seller writes becomes a public GitHub issue only when
-// they send the form. The version and the last Vinted site used ride after
-// the #, which the browser keeps to itself: Firefox counts facts about the
-// add-on as technical data, which may only be collected with the user's
-// consent, so opening the page must tell the website nothing, and the form
-// sends them only with the seller's report. On Firefox the address carries
-// them only once the user has allowed technical data (diagnostics.js). Set on
-// every wake rather than once, and again when the site or that choice
-// changes: the call is cheap, and the address is then right however the
-// worker came up.
-async function setGoodbye(site) {
-  const allowed = await BumplineLog.technicalDataAllowed(ext, BumplineStore.isFirefox());
-  const url = BumplineLog.goodbyeUrl(SITE, ext.runtime.getManifest().version, site || null, allowed);
-  Promise.resolve(ext.runtime.setUninstallURL(url))
-    .catch(err => note('could not set the uninstall page', err));
-}
-
-function setGoodbyeFromStorage() {
-  Promise.resolve(ext.storage.local.get(BumplineLog.LAST_SITE_KEY))
-    .then(bag => setGoodbye(bag && bag[BumplineLog.LAST_SITE_KEY]))
-    .catch(() => setGoodbye(null));
-}
-
-setGoodbyeFromStorage();
-
-ext.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local' || !changes || !(BumplineLog.LAST_SITE_KEY in changes)) return;
-  setGoodbye(changes[BumplineLog.LAST_SITE_KEY].newValue);
-});
-
-// The user can grant or withdraw technical data in about:addons at any time.
-if (BumplineStore.isFirefox() && ext.permissions && ext.permissions.onAdded) {
-  ext.permissions.onAdded.addListener(setGoodbyeFromStorage);
-  ext.permissions.onRemoved.addListener(setGoodbyeFromStorage);
+// This fork runs fully locally: no welcome page is opened on install and no
+// page on the developer's website is opened on uninstall. An uninstall address
+// set by an earlier version is cleared.
+try {
+  Promise.resolve(ext.runtime.setUninstallURL(''))
+    .catch(err => note('could not clear the uninstall page', err));
+} catch (err) {
+  note('could not clear the uninstall page', err);
 }
